@@ -1,0 +1,148 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - new-index
+    tags:
+      - "v*"
+  pull_request: {}
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run cargo check
+        run: cargo check --all-targets
+      - name: Run clippy
+        run: cargo clippy --all-targets
+
+  build-release:
+    needs: check-lint
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: x86_64-unknown-linux-gnu
+            suffix: ""
+            rustflags: ""
+          - os: macos-latest
+            name: x86_64-apple-darwin
+            suffix: ""
+            rustflags: ""
+          - os: ubuntu-latest
+            name: x86_64-pc-windows-gnu
+            suffix: ".exe"
+            rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.75.0
+        with:
+          targets: ${{ matrix.name }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install mingw-w64 (Windows cross-compile)
+        if: matrix.name == 'x86_64-pc-windows-gnu'
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.name }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          ELECTRS_VERSION=$(cargo metadata --format-version 1 | \
+            jq -er '.packages | map(select(.name == "electrs") | .version) | .[0]')
+          echo "version=$ELECTRS_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create release artifacts
+        run: |
+          cd target/${{ matrix.name }}/release
+          ln electrs${{ matrix.suffix }} electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}
+          path: target/${{ matrix.name }}/release/electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/${{ matrix.name }}/release/electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+
+  upload-to-releases-drivechain:
+    needs: build-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download release assets
+        uses: robinraju/release-downloader@v1.9
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: "*"
+          out-file-path: "release-assets"
+
+      - name: Create zip files for releases.drivechain.info
+        run: |
+          cd release-assets
+
+          # Get version from filename
+          VERSION=$(ls electrs-*-x86_64-unknown-linux-gnu 2>/dev/null | head -1 | sed 's/electrs-\(.*\)-x86_64-unknown-linux-gnu/\1/')
+
+          # Linux
+          if [ -f "electrs-${VERSION}-x86_64-unknown-linux-gnu" ]; then
+            mv "electrs-${VERSION}-x86_64-unknown-linux-gnu" "electrs-latest-x86_64-unknown-linux-gnu"
+            chmod +x "electrs-latest-x86_64-unknown-linux-gnu"
+            zip "electrs-latest-x86_64-unknown-linux-gnu.zip" "electrs-latest-x86_64-unknown-linux-gnu"
+          fi
+
+          # macOS
+          if [ -f "electrs-${VERSION}-x86_64-apple-darwin" ]; then
+            mv "electrs-${VERSION}-x86_64-apple-darwin" "electrs-latest-x86_64-apple-darwin"
+            chmod +x "electrs-latest-x86_64-apple-darwin"
+            zip "electrs-latest-x86_64-apple-darwin.zip" "electrs-latest-x86_64-apple-darwin"
+          fi
+
+          # Windows
+          if [ -f "electrs-${VERSION}-x86_64-pc-windows-gnu.exe" ]; then
+            mv "electrs-${VERSION}-x86_64-pc-windows-gnu.exe" "electrs-latest-x86_64-pc-windows-gnu.exe"
+            zip "electrs-latest-x86_64-pc-windows-gnu.zip" "electrs-latest-x86_64-pc-windows-gnu.exe"
+          fi
+
+          ls -la *.zip
+
+      - name: Upload to releases.drivechain.info
+        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+        with:
+          host: 45.33.96.47
+          user: root
+          pass: ${{ secrets.RELEASES_SERVER_PW }}
+          port: 22
+          scp: |
+            './release-assets/electrs-latest-*.zip' => /var/www/html/
