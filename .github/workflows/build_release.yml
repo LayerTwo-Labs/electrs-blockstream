@@ -26,6 +26,10 @@ jobs:
             suffix: ""
             rustflags: ""
           - os: macos-latest
+            name: aarch64-apple-darwin
+            suffix: ""
+            rustflags: ""
+          - os: macos-13
             name: x86_64-apple-darwin
             suffix: ""
             rustflags: ""
@@ -145,7 +149,14 @@ jobs:
             zip "electrs-latest-x86_64-unknown-linux-gnu.zip" "electrs-latest-x86_64-unknown-linux-gnu"
           fi
 
-          # macOS
+          # macOS (Apple Silicon)
+          if [ -f "electrs-${VERSION}-aarch64-apple-darwin" ]; then
+            mv "electrs-${VERSION}-aarch64-apple-darwin" "electrs-latest-aarch64-apple-darwin"
+            chmod +x "electrs-latest-aarch64-apple-darwin"
+            zip "electrs-latest-aarch64-apple-darwin.zip" "electrs-latest-aarch64-apple-darwin"
+          fi
+
+          # macOS (Intel)
           if [ -f "electrs-${VERSION}-x86_64-apple-darwin" ]; then
             mv "electrs-${VERSION}-x86_64-apple-darwin" "electrs-latest-x86_64-apple-darwin"
             chmod +x "electrs-latest-x86_64-apple-darwin"
