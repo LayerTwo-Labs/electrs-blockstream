@@ -5,8 +5,6 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use signal_hook::consts::{SIGINT, SIGTERM, SIGUSR1};
-#[cfg(windows)]
-use signal_hook::consts::{SIGINT, SIGTERM};
 
 use crate::errors::*;
 
@@ -16,6 +14,7 @@ pub struct Waiter {
     zmq_receiver: channel::Receiver<BlockHash>,
 }
 
+#[cfg(unix)]
 fn notify(signals: &[i32]) -> channel::Receiver<i32> {
     let (s, r) = channel::bounded(1);
     let mut signals =
@@ -29,18 +28,46 @@ fn notify(signals: &[i32]) -> channel::Receiver<i32> {
     r
 }
 
+#[cfg(windows)]
+fn notify() -> channel::Receiver<i32> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let (s, r) = channel::bounded(1);
+    let term = Arc::new(AtomicBool::new(false));
+
+    // Register Ctrl+C handler
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("failed to register SIGINT handler");
+
+    thread::spawn(move || {
+        while !term.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(100));
+        }
+        s.send(signal_hook::consts::SIGINT)
+            .unwrap_or_else(|_| panic!("failed to send signal"));
+    });
+    r
+}
+
 impl Waiter {
+    #[cfg(unix)]
     pub fn start(block_hash_receive: channel::Receiver<BlockHash>) -> Waiter {
-        #[cfg(unix)]
         let signals = &[
             SIGINT, SIGTERM,
             SIGUSR1, // allow external triggering (e.g. via bitcoind `blocknotify`)
         ];
-        #[cfg(windows)]
-        let signals = &[SIGINT, SIGTERM];
 
         Waiter {
             receiver: notify(signals),
+            zmq_receiver: block_hash_receive,
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn start(block_hash_receive: channel::Receiver<BlockHash>) -> Waiter {
+        Waiter {
+            receiver: notify(),
             zmq_receiver: block_hash_receive,
         }
     }

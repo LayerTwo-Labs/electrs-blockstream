@@ -23,6 +23,7 @@ use hyper::{Body, Method, Response, Server, StatusCode};
 use hyperlocal::UnixServerExt;
 use tokio::sync::oneshot;
 
+#[cfg(unix)]
 use std::fs;
 use std::str::FromStr;
 

@@ -1,5 +1,7 @@
+#[cfg(target_os = "linux")]
 use page_size;
 use prometheus::{self, Encoder};
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::io;
 use std::net::SocketAddr;
