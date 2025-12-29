@@ -19,6 +19,7 @@ use bitcoin::hashes::FromSliceError as HashError;
 use bitcoin::hex::{self, DisplayHex, FromHex, HexToBytesIter};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Response, Server, StatusCode};
+#[cfg(unix)]
 use hyperlocal::UnixServerExt;
 use tokio::sync::oneshot;
 
@@ -37,6 +38,7 @@ use serde::Serialize;
 use serde_json;
 use std::collections::HashMap;
 use std::num::ParseIntError;
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::thread;
@@ -543,6 +545,7 @@ async fn run_server(config: Arc<Config>, query: Arc<Query>, rx: oneshot::Receive
         }
     };
 
+    #[cfg(unix)]
     let server = match socket_file {
         None => {
             info!("REST server running on {}", addr);
@@ -576,6 +579,26 @@ async fn run_server(config: Arc<Config>, query: Arc<Query>, rx: oneshot::Receive
                 })
                 .await
         }
+    };
+
+    #[cfg(not(unix))]
+    let server = {
+        if socket_file.is_some() {
+            panic!("Unix socket support is not available on this platform");
+        }
+
+        info!("REST server running on {}", addr);
+
+        let socket = create_socket(&addr);
+        socket.listen(511).expect("setting backlog failed");
+
+        Server::from_tcp(socket.into())
+            .expect("Server::from_tcp failed")
+            .serve(make_service_fn(move |_| make_service_fn_inn()))
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            })
+            .await
     };
 
     if let Err(e) = server {

@@ -5,6 +5,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::thread;
 use std::time::Duration;
+#[cfg(target_os = "linux")]
 use sysconf;
 use tiny_http;
 
@@ -98,14 +99,8 @@ struct Stats {
     fds: usize,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_stats() -> Result<Stats> {
-    if cfg!(target_os = "macos") {
-        return Ok(Stats {
-            utime: 0f64,
-            rss: 0u64,
-            fds: 0usize,
-        });
-    }
     let value = fs::read_to_string("/proc/self/stat").chain_err(|| "failed to read stats")?;
     let parts: Vec<&str> = value.split_whitespace().collect();
     let page_size = page_size::get() as u64;
@@ -127,6 +122,16 @@ fn parse_stats() -> Result<Stats> {
         .chain_err(|| "failed to read fd directory")?
         .count();
     Ok(Stats { utime, rss, fds })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn parse_stats() -> Result<Stats> {
+    // Process stats are not available on non-Linux platforms
+    Ok(Stats {
+        utime: 0f64,
+        rss: 0u64,
+        fds: 0usize,
+    })
 }
 
 fn start_process_exporter(metrics: &Metrics) {
