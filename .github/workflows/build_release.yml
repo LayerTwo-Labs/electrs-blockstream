@@ -29,10 +29,10 @@ jobs:
             name: x86_64-apple-darwin
             suffix: ""
             rustflags: ""
-          - os: ubuntu-latest
-            name: x86_64-pc-windows-gnu
+          - os: windows-latest
+            name: x86_64-pc-windows-msvc
             suffix: ".exe"
-            rustflags: "-C linker=/usr/bin/x86_64-w64-mingw32-gcc"
+            rustflags: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -53,38 +53,72 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libzmq3-dev clang
 
-      - name: Install mingw-w64 (Windows cross-compile)
-        if: matrix.name == 'x86_64-pc-windows-gnu'
-        run: sudo apt-get install -y mingw-w64
+      - name: Install Windows dependencies
+        if: matrix.os == 'windows-latest'
+        run: |
+          vcpkg install zeromq:x64-windows-static-md
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+        shell: pwsh
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.name }}
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
 
-      - name: Get version from Cargo.toml
-        id: version
+      - name: Get version from Cargo.toml (Unix)
+        if: matrix.os != 'windows-latest'
+        id: version-unix
         run: |
           ELECTRS_VERSION=$(cargo metadata --format-version 1 | \
             jq -er '.packages | map(select(.name == "electrs") | .version) | .[0]')
           echo "version=$ELECTRS_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create release artifacts
+      - name: Get version from Cargo.toml (Windows)
+        if: matrix.os == 'windows-latest'
+        id: version-windows
+        run: |
+          $metadata = cargo metadata --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq "electrs" }).version
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Create release artifacts (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.name }}/release
-          ln electrs${{ matrix.suffix }} electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+          ln electrs${{ matrix.suffix }} electrs-${{ steps.version-unix.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
 
-      - name: Upload artifacts
+      - name: Create release artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          copy "target\${{ matrix.name }}\release\electrs${{ matrix.suffix }}" "target\${{ matrix.name }}\release\electrs-${{ steps.version-windows.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}"
+        shell: cmd
+
+      - name: Upload artifacts (Unix)
+        if: matrix.os != 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}
-          path: target/${{ matrix.name }}/release/electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+          name: electrs-${{ steps.version-unix.outputs.version }}-${{ matrix.name }}
+          path: target/${{ matrix.name }}/release/electrs-${{ steps.version-unix.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
 
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
         with:
-          files: target/${{ matrix.name }}/release/electrs-${{ steps.version.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+          name: electrs-${{ steps.version-windows.outputs.version }}-${{ matrix.name }}
+          path: target/${{ matrix.name }}/release/electrs-${{ steps.version-windows.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+
+      - name: Release (Unix)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') && matrix.os != 'windows-latest'
+        with:
+          files: target/${{ matrix.name }}/release/electrs-${{ steps.version-unix.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
+
+      - name: Release (Windows)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'windows-latest'
+        with:
+          files: target/${{ matrix.name }}/release/electrs-${{ steps.version-windows.outputs.version }}-${{ matrix.name }}${{ matrix.suffix }}
 
   upload-to-releases-drivechain:
     needs: build-release
@@ -120,9 +154,9 @@ jobs:
           fi
 
           # Windows
-          if [ -f "electrs-${VERSION}-x86_64-pc-windows-gnu.exe" ]; then
-            mv "electrs-${VERSION}-x86_64-pc-windows-gnu.exe" "electrs-latest-x86_64-pc-windows-gnu.exe"
-            zip "electrs-latest-x86_64-pc-windows-gnu.zip" "electrs-latest-x86_64-pc-windows-gnu.exe"
+          if [ -f "electrs-${VERSION}-x86_64-pc-windows-msvc.exe" ]; then
+            mv "electrs-${VERSION}-x86_64-pc-windows-msvc.exe" "electrs-latest-x86_64-pc-windows-msvc.exe"
+            zip "electrs-latest-x86_64-pc-windows-msvc.zip" "electrs-latest-x86_64-pc-windows-msvc.exe"
           fi
 
           ls -la *.zip
