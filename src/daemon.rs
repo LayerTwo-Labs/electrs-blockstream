@@ -394,7 +394,14 @@ impl Daemon {
         loop {
             let info = daemon.getblockchaininfo()?;
 
-            if !info.initialblockdownload.unwrap_or(false) && info.blocks == info.headers {
+            // For regtest, ignore initialblockdownload flag since it's always true on empty chains
+            let ibd_done = if network.is_regtest() {
+                info.blocks == info.headers
+            } else {
+                !info.initialblockdownload.unwrap_or(false)
+            };
+
+            if ibd_done && info.blocks == info.headers {
                 break;
             }
 
