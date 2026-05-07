@@ -84,8 +84,15 @@ sysconf = ">=0.3.4"
 [dev-dependencies]
 bitcoind = { version = "0.36", features = ["25_0"] }
 elementsd = { version = "0.11", features = ["22_1_1"] }
-electrumd = { version = "0.1.0", features = ["4_5_4"] }
 ureq = { version = "2.9", default-features = false, features = ["json"] }
+
+# electrumd build.rs only defines download_filename() on linux/x86_64; gate the version
+# feature (which triggers the binary download) to that platform to avoid compile errors elsewhere.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
+electrumd = { version = "0.1.0", features = ["4_5_4"] }
+
+[target.'cfg(not(all(target_os = "linux", target_arch = "x86_64")))'.dev-dependencies]
+electrumd = { version = "0.1.0" }
 tempfile = "3.10"
 criterion = { version = "0.4", features = ["html_reports"] }
 bitcoin-test-data = { version = "*" }
