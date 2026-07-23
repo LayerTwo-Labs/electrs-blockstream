@@ -42,10 +42,12 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@1.75.0
+    - uses: dtolnay/rust-toolchain@1.88.0
     - uses: Swatinem/rust-cache@v2
-    - name: Run tests (Liquid mode, REST)
-      run: RUST_LOG=debug cargo test --features liquid
+    - name: Run library tests (Liquid mode, REST)
+      run: RUST_LOG=debug cargo test --locked --features liquid --lib
+    - name: Build release server (Liquid mode)
+      run: cargo build --locked --release --features liquid --bin electrs
 
   nix:
     runs-on: ubuntu-latest
