@@ -1004,8 +1004,6 @@ dependencies = [
 [[package]]
 name = "elements"
 version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d562b364c5d2aced40b01b3f73fc968311787e6813957593d4ffa94cd8733e3"
 dependencies = [
  "bech32 0.11.1",
  "bitcoin 0.32.8",

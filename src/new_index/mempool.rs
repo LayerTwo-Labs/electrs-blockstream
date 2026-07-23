@@ -383,7 +383,7 @@ impl Mempool {
             let mut tx_scripthashes = Vec::with_capacity(tx.input.len() + tx.output.len()); // best-effort capacity hint
 
             // Get feeinfo for caching and recent tx overview
-            let feeinfo = TxFeeInfo::new(&tx, &prevouts, self.config.network_type);
+            let feeinfo = TxFeeInfo::new(&tx, &prevouts, &self.config);
 
             // recent is an ArrayDeque that automatically evicts the oldest elements
             self.recent.push_front(TxOverview {
@@ -454,7 +454,7 @@ impl Mempool {
             #[cfg(feature = "liquid")]
             asset::index_mempool_tx_assets(
                 &tx,
-                self.config.network_type,
+                self.config.pegged_asset,
                 self.config.parent_network,
                 &mut self.asset_history,
                 &mut self.asset_issuance,

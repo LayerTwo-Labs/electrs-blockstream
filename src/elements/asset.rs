@@ -7,7 +7,7 @@ use elements::encode::{deserialize, serialize};
 use elements::secp256k1_zkp::ZERO_TWEAK;
 use elements::{issuance::ContractHash, AssetId, AssetIssuance, OutPoint, Transaction, TxIn};
 
-use crate::chain::{BNetwork, BlockHash, Network, Txid};
+use crate::chain::{BNetwork, BlockHash, Txid};
 use crate::elements::peg::{get_pegin_data, get_pegout_data, PeginInfo, PegoutInfo};
 use crate::elements::registry::{AssetMeta, AssetRegistry};
 use crate::errors::*;
@@ -46,6 +46,9 @@ pub struct PeggedAsset {
     pub asset_id: AssetId,
     pub chain_stats: PeggedAssetStats,
     pub mempool_stats: PeggedAssetStats,
+
+    #[serde(flatten)]
+    pub meta: Option<AssetMeta>,
 }
 
 #[derive(Serialize)]
@@ -175,11 +178,11 @@ pub struct BurningInfo {
 pub fn index_confirmed_tx_assets(
     tx: &Transaction,
     confirmed_height: u32,
-    network: Network,
+    pegged_asset: Option<AssetId>,
     parent_network: BNetwork,
     rows: &mut Vec<DBRow>,
 ) {
-    let (history, issuances) = index_tx_assets(tx, network, parent_network);
+    let (history, issuances) = index_tx_assets(tx, pegged_asset, parent_network);
 
     rows.extend(
         history.into_iter().map(|(asset_id, info)| {
@@ -199,12 +202,12 @@ pub fn index_confirmed_tx_assets(
 // Index mempool transaction issuances and save to in-memory store
 pub fn index_mempool_tx_assets(
     tx: &Transaction,
-    network: Network,
+    pegged_asset: Option<AssetId>,
     parent_network: BNetwork,
     asset_history: &mut HashMap<AssetId, Vec<TxHistoryInfo>>,
     asset_issuance: &mut HashMap<AssetId, AssetRow>,
 ) {
-    let (history, issuances) = index_tx_assets(tx, network, parent_network);
+    let (history, issuances) = index_tx_assets(tx, pegged_asset, parent_network);
     for (asset_id, info) in history {
         asset_history
             .entry(asset_id)
@@ -237,7 +240,7 @@ pub fn remove_mempool_tx_assets(
 // Internal utility function, index a transaction and return its history entries and issuances
 fn index_tx_assets(
     tx: &Transaction,
-    network: Network,
+    pegged_asset: Option<AssetId>,
     parent_network: BNetwork,
 ) -> (Vec<(AssetId, TxHistoryInfo)>, Vec<(AssetId, AssetRow)>) {
     let mut history = vec![];
@@ -246,7 +249,7 @@ fn index_tx_assets(
     let txid = full_hash(&tx.txid()[..]);
 
     for (txo_index, txo) in tx.output.iter().enumerate() {
-        if let Some(pegout) = get_pegout_data(txo, network, parent_network) {
+        if let Some(pegout) = get_pegout_data(txo, pegged_asset.as_ref(), parent_network) {
             history.push((
                 pegout.asset.explicit().unwrap(),
                 TxHistoryInfo::Pegout(PegoutInfo {
@@ -272,13 +275,13 @@ fn index_tx_assets(
     }
 
     for (txi_index, txi) in tx.input.iter().enumerate() {
-        if let Some(pegin) = get_pegin_data(txi, network) {
+        if let Some(pegin) = get_pegin_data(txi, pegged_asset.as_ref()) {
             history.push((
-                pegin.asset,
+                pegin.asset(),
                 TxHistoryInfo::Pegin(PeginInfo {
                     txid,
                     vin: txi_index as u32,
-                    value: pegin.value,
+                    value: pegin.value(),
                 }),
             ));
         } else if txi.has_issuance() {
@@ -355,13 +358,17 @@ pub fn lookup_asset(
     asset_id: &AssetId,
     meta: Option<&AssetMeta>, // may optionally be provided if already known
 ) -> Result<Option<LiquidAsset>> {
-    if query.network().pegged_asset() == Some(asset_id) {
+    if query.config().pegged_asset.as_ref() == Some(asset_id) {
         let (chain_stats, mempool_stats) = pegged_asset_stats(query, asset_id);
+        let meta = meta
+            .cloned()
+            .or_else(|| registry.and_then(|r| r.read().unwrap().get(asset_id).cloned()));
 
         return Ok(Some(LiquidAsset::Native(PeggedAsset {
             asset_id: *asset_id,
             chain_stats: chain_stats,
             mempool_stats: mempool_stats,
+            meta,
         })));
     }
 

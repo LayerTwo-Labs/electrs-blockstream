@@ -118,6 +118,8 @@ impl TestRunner {
 
             #[cfg(feature = "liquid")]
             asset_db_path: None, // XXX
+            native_asset: *network_type.native_asset(),
+            pegged_asset: network_type.pegged_asset().copied(),
             #[cfg(feature = "liquid")]
             parent_network: bitcoin::Network::Regtest,
             db_block_cache_mb: 8,

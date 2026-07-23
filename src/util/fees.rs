@@ -1,4 +1,5 @@
-use crate::chain::{Network, Transaction, TxOut};
+use crate::chain::{Transaction, TxOut};
+use crate::config::Config;
 use std::collections::HashMap;
 
 use electrs_macros::trace;
@@ -12,8 +13,8 @@ pub struct TxFeeInfo {
 }
 
 impl TxFeeInfo {
-    pub fn new(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, network: Network) -> Self {
-        let fee = get_tx_fee(tx, prevouts, network);
+    pub fn new(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, config: &Config) -> Self {
+        let fee = get_tx_fee(tx, prevouts, config);
 
         let weight = tx.weight();
         #[cfg(not(feature = "liquid"))] // rust-bitcoin has a wrapper Weight type
@@ -30,7 +31,7 @@ impl TxFeeInfo {
 }
 
 #[cfg(not(feature = "liquid"))]
-pub fn get_tx_fee(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, _network: Network) -> u64 {
+pub fn get_tx_fee(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, _config: &Config) -> u64 {
     if tx.is_coinbase() {
         return 0;
     }
@@ -44,8 +45,8 @@ pub fn get_tx_fee(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, _network: N
 }
 
 #[cfg(feature = "liquid")]
-pub fn get_tx_fee(tx: &Transaction, _prevouts: &HashMap<u32, &TxOut>, network: Network) -> u64 {
-    tx.fee_in(*network.native_asset())
+pub fn get_tx_fee(tx: &Transaction, _prevouts: &HashMap<u32, &TxOut>, config: &Config) -> u64 {
+    tx.fee_in(config.native_asset)
 }
 
 #[trace]

@@ -35,7 +35,7 @@ use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB
 use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
 
 #[cfg(feature = "liquid")]
-use crate::elements::{asset, ebcompact::TxidCompat, peg};
+use crate::elements::{asset, peg};
 
 #[cfg(feature = "liquid")]
 use elements::encode::VarInt;
@@ -73,6 +73,8 @@ impl Store {
         info!("{} blocks were added", added_blockhashes.len());
 
         let history_db = DB::open(&path.join("history"), config, verify_compat, &shared_cache);
+        #[cfg(feature = "liquid")]
+        migrate_drivechain_peg_index(&history_db);
         let indexed_blockhashes = load_blockhashes(&history_db, &BlockRow::done_filter());
         info!("{} blocks were indexed", indexed_blockhashes.len());
 
@@ -83,7 +85,10 @@ impl Store {
         history_db.start_stats_exporter(Arc::clone(&db_metrics), "history_db");
         cache_db.start_stats_exporter(Arc::clone(&db_metrics), "cache_db");
 
-        let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
+        let headers = if indexed_blockhashes.is_empty() {
+            info!("history index is empty; replaying the active chain from genesis");
+            HeaderList::empty()
+        } else if let Some(tip_hash) = txstore_db.get(b"t") {
             let mut tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
             let headers_map = load_blockheaders(&txstore_db);
 
@@ -138,6 +143,22 @@ impl Store {
     pub fn done_initial_sync(&self) -> bool {
         self.txstore_db.get(b"t").is_some()
     }
+}
+
+#[cfg(feature = "liquid")]
+fn migrate_drivechain_peg_index(history_db: &DB) {
+    const VERSION_KEY: &[u8] = b"drivechain-peg-index-version";
+    const VERSION: &[u8] = b"1";
+    if history_db.get(VERSION_KEY).as_deref() == Some(VERSION) {
+        return;
+    }
+
+    info!("migrating native asset history for BIP300 drivechain deposit witnesses");
+    // Asset rows are regenerated with the new parser. Removing block completion rows makes
+    // the normal indexer replay every active-chain block, while transaction data remains intact.
+    history_db.delete_range(b"I", b"J", DBFlush::Enable);
+    history_db.delete_range(b"D", b"E", DBFlush::Enable);
+    history_db.put_sync(VERSION_KEY, VERSION);
 }
 
 type UtxoMap = HashMap<OutPoint, (BlockId, Value)>;
@@ -217,6 +238,8 @@ struct IndexerConfig {
     block_batch_size: usize,
     #[cfg(feature = "liquid")]
     parent_network: crate::chain::BNetwork,
+    #[cfg(feature = "liquid")]
+    pegged_asset: Option<crate::chain::AssetId>,
 }
 
 impl From<&Config> for IndexerConfig {
@@ -229,6 +252,8 @@ impl From<&Config> for IndexerConfig {
             block_batch_size: config.initial_sync_batch_size,
             #[cfg(feature = "liquid")]
             parent_network: config.parent_network,
+            #[cfg(feature = "liquid")]
+            pegged_asset: config.pegged_asset,
         }
     }
 }
@@ -1430,7 +1455,7 @@ fn index_transaction(
     asset::index_confirmed_tx_assets(
         tx,
         confirmed_height,
-        iconfig.network,
+        iconfig.pegged_asset,
         iconfig.parent_network,
         rows,
     );

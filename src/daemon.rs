@@ -143,6 +143,121 @@ pub struct BlockchainInfo {
     pub initialblockdownload: Option<bool>,
 }
 
+#[cfg(feature = "liquid")]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DrivechainPegEvents {
+    pub schema_version: u32,
+    pub sidechain_id: u32,
+    pub sidechain_tip: DrivechainSidechainTip,
+    pub range: DrivechainEventRange,
+    pub events: Vec<Value>,
+}
+
+#[cfg(feature = "liquid")]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DrivechainSidechainTip {
+    pub hash: String,
+    pub height: u32,
+}
+
+#[cfg(feature = "liquid")]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DrivechainEventRange {
+    pub start_height: u32,
+    pub end_height: u32,
+}
+
+#[cfg(feature = "liquid")]
+fn validate_drivechain_peg_events(
+    response: DrivechainPegEvents,
+    start_height: u32,
+) -> Result<DrivechainPegEvents> {
+    ensure!(
+        response.schema_version == 1,
+        "unsupported drivechain peg event schema {}",
+        response.schema_version
+    );
+    ensure!(
+        response.range.start_height == start_height,
+        "drivechain peg event response changed start height"
+    );
+    ensure!(
+        response.range.end_height >= response.range.start_height,
+        "invalid drivechain peg event range"
+    );
+    ensure!(
+        response.range.end_height <= response.sidechain_tip.height,
+        "drivechain peg event range exceeds sidechain tip"
+    );
+    ensure!(
+        BlockHash::from_str(&response.sidechain_tip.hash).is_ok(),
+        "invalid drivechain sidechain tip hash"
+    );
+
+    let mut event_ids = HashSet::new();
+    for event in &response.events {
+        let object = event
+            .as_object()
+            .chain_err(|| "drivechain peg event must be an object")?;
+        let event_id = object
+            .get("event_id")
+            .and_then(Value::as_str)
+            .chain_err(|| "drivechain peg event is missing event_id")?;
+        ensure!(
+            event_ids.insert(event_id),
+            "duplicate drivechain peg event id {}",
+            event_id
+        );
+        for field in ["source", "kind", "status"] {
+            ensure!(
+                object
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()),
+                "drivechain peg event {} is missing {}",
+                event_id,
+                field
+            );
+        }
+
+        let source = object["source"].as_str().unwrap();
+        ensure!(
+            matches!(source, "sidechain" | "l1"),
+            "drivechain peg event {} has invalid source {}",
+            event_id,
+            source
+        );
+
+        let location = match source {
+            "sidechain" => object.get("sidechain"),
+            "l1" => object.get("l1"),
+            _ => unreachable!(),
+        }
+        .and_then(Value::as_object)
+        .chain_err(|| {
+            format!(
+                "drivechain peg event {} is missing its chain location",
+                event_id
+            )
+        })?;
+        let block_hash = location
+            .get("block_hash")
+            .and_then(Value::as_str)
+            .chain_err(|| format!("drivechain peg event {} has no block hash", event_id))?;
+        ensure!(
+            BlockHash::from_str(block_hash).is_ok(),
+            "drivechain peg event {} has invalid block hash",
+            event_id
+        );
+        ensure!(
+            location.get("height").and_then(Value::as_u64).is_some(),
+            "drivechain peg event {} has invalid block height",
+            event_id
+        );
+    }
+    Ok(response)
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct NetworkInfo {
     version: u64,
@@ -806,6 +921,22 @@ impl Daemon {
         Ok(from_value(info).chain_err(|| "invalid blockchain info")?)
     }
 
+    #[cfg(feature = "liquid")]
+    pub fn getdrivechainpegevents(
+        &self,
+        start_height: u32,
+        count: u32,
+        include_l1: bool,
+    ) -> Result<DrivechainPegEvents> {
+        let value = self.request(
+            "getdrivechainpegevents",
+            json!([start_height, count, include_l1]),
+        )?;
+        let response: DrivechainPegEvents =
+            from_value(value).chain_err(|| "malformed getdrivechainpegevents response")?;
+        validate_drivechain_peg_events(response, start_height)
+    }
+
     #[trace]
     fn getnetworkinfo(&self) -> Result<NetworkInfo> {
         let info: Value = self.request("getnetworkinfo", json!([]))?;
@@ -1094,6 +1225,8 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::{parse_jsonrpc_reply, recycle_due};
+    #[cfg(feature = "liquid")]
+    use super::{validate_drivechain_peg_events, DrivechainPegEvents};
     use crate::errors::{Error, ErrorKind};
     use serde_json::json;
     use std::time::Duration;
@@ -1147,5 +1280,108 @@ mod tests {
             }
             other => panic!("unexpected getblocktemplate warmup result: {:?}", other),
         }
+    }
+
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn validates_drivechain_event_contract() {
+        let valid: DrivechainPegEvents = serde_json::from_value(json!({
+            "schema_version": 1,
+            "sidechain_id": 24,
+            "sidechain_tip": {
+                "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "height": 10
+            },
+            "range": {"start_height": 0, "end_height": 10},
+            "events": [{
+                "event_id": "sidechain:deposit:one:0",
+                "source": "sidechain",
+                "kind": "deposit",
+                "status": "sidechain_confirmed",
+                "sidechain": {
+                    "block_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "height": 5
+                }
+            }]
+        }))
+        .unwrap();
+        assert!(validate_drivechain_peg_events(valid, 0).is_ok());
+
+        let duplicate: DrivechainPegEvents = serde_json::from_value(json!({
+            "schema_version": 1,
+            "sidechain_id": 24,
+            "sidechain_tip": {
+                "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "height": 10
+            },
+            "range": {"start_height": 0, "end_height": 10},
+            "events": [
+                {
+                    "event_id":"same","source":"l1","kind":"deposit","status":"l1_confirmed",
+                    "l1":{"block_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","height":5}
+                },
+                {
+                    "event_id":"same","source":"l1","kind":"deposit","status":"l1_confirmed",
+                    "l1":{"block_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","height":5}
+                }
+            ]
+        }))
+        .unwrap();
+        assert!(validate_drivechain_peg_events(duplicate, 0).is_err());
+    }
+
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn validates_captured_drivechain_lifecycle_fixture() {
+        let fixture: DrivechainPegEvents =
+            serde_json::from_str(include_str!("../tests/fixtures/drivechain-pegs-v1.json"))
+                .unwrap();
+        let fixture = validate_drivechain_peg_events(fixture, 0).unwrap();
+
+        let submitted = fixture
+            .events
+            .iter()
+            .find(|event| event["kind"] == "withdrawal_bundle" && event["status"] == "submitted");
+        let succeeded = fixture
+            .events
+            .iter()
+            .find(|event| event["kind"] == "withdrawal_bundle" && event["status"] == "succeeded");
+        assert!(submitted.is_some());
+        assert!(succeeded.is_some());
+        assert_eq!(submitted.unwrap()["m6id"], succeeded.unwrap()["m6id"]);
+    }
+
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn rejects_malformed_drivechain_event_contracts() {
+        let fixture = || {
+            serde_json::from_str::<DrivechainPegEvents>(include_str!(
+                "../tests/fixtures/drivechain-pegs-v1.json"
+            ))
+            .unwrap()
+        };
+
+        let mut bad_schema = fixture();
+        bad_schema.schema_version = 2;
+        assert!(validate_drivechain_peg_events(bad_schema, 0).is_err());
+
+        let mut bad_range = fixture();
+        bad_range.range.end_height = bad_range.sidechain_tip.height + 1;
+        assert!(validate_drivechain_peg_events(bad_range, 0).is_err());
+
+        let mut bad_source = fixture();
+        bad_source.events[0]["source"] = json!("unknown");
+        assert!(validate_drivechain_peg_events(bad_source, 0).is_err());
+
+        let mut missing_location = fixture();
+        missing_location.events[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("sidechain");
+        assert!(validate_drivechain_peg_events(missing_location, 0).is_err());
+
+        let mut bad_location_hash = fixture();
+        bad_location_hash.events[0]["sidechain"]["block_hash"] = json!("not-a-hash");
+        assert!(validate_drivechain_peg_events(bad_location_hash, 0).is_err());
     }
 }

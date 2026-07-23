@@ -33,7 +33,11 @@ use electrs_macros::trace;
 
 #[cfg(feature = "liquid")]
 use {
-    crate::elements::{ebcompact::*, peg::PegoutValue, AssetSorting, IssuanceValue},
+    crate::elements::{
+        ebcompact::*,
+        peg::{DrivechainPeginValue, PegoutValue},
+        AssetSorting, IssuanceValue,
+    },
     elements::{encode, secp256k1_zkp as zkp, AssetId},
 };
 
@@ -49,6 +53,9 @@ const CHAIN_TXS_PER_PAGE: usize = 25;
 const MAX_MEMPOOL_TXS: usize = 50;
 const BLOCK_LIMIT: usize = 10;
 const ADDRESS_SEARCH_LIMIT: usize = 10;
+
+#[cfg(feature = "liquid")]
+const DRIVECHAIN_PEG_EVENT_LIMIT: u32 = 10_000;
 
 const REQUEST_HEADER_TIMEOUT: time::Duration = time::Duration::from_secs(10);
 const REQUEST_BODY_TIMEOUT: time::Duration = time::Duration::from_secs(30);
@@ -88,6 +95,9 @@ struct BlockValue {
 
     #[cfg(feature = "liquid")]
     #[serde(skip_serializing_if = "Option::is_none")]
+    withdrawal_bundle_hash: Option<BlockHash>,
+    #[cfg(feature = "liquid")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     ext: Option<elements::BlockExtData>,
 }
 
@@ -121,6 +131,8 @@ impl BlockValue {
             #[cfg(not(feature = "liquid"))]
             difficulty: header.difficulty_float(),
 
+            #[cfg(feature = "liquid")]
+            withdrawal_bundle_hash: header.withdrawal_bundle_hash,
             #[cfg(feature = "liquid")]
             ext: Some(header.ext.clone()),
         }
@@ -171,7 +183,7 @@ impl TransactionValue {
             .map(|txout| TxOutValue::new(txout, config))
             .collect();
 
-        let fee = get_tx_fee(&tx, &prevouts, config.network_type);
+        let fee = get_tx_fee(&tx, &prevouts, config);
 
         let weight = tx.weight();
         #[cfg(not(feature = "liquid"))] // rust-bitcoin has a wrapper Weight type
@@ -229,6 +241,9 @@ struct TxInValue {
     is_pegin: bool,
     #[cfg(feature = "liquid")]
     #[serde(skip_serializing_if = "Option::is_none")]
+    drivechain_pegin: Option<DrivechainPeginValue>,
+    #[cfg(feature = "liquid")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     issuance: Option<IssuanceValue>,
 }
 
@@ -273,6 +288,8 @@ impl TxInValue {
             sequence: txin.sequence,
             #[cfg(feature = "liquid")]
             is_pegin: txin.is_pegin,
+            #[cfg(feature = "liquid")]
+            drivechain_pegin: DrivechainPeginValue::from_txin(txin, config.pegged_asset.as_ref()),
             #[cfg(feature = "liquid")]
             issuance: if txin.has_issuance() {
                 Some(IssuanceValue::from(txin))
@@ -360,7 +377,8 @@ impl TxOutValue {
         };
 
         #[cfg(feature = "liquid")]
-        let pegout = PegoutValue::from_txout(txout, config.network_type, config.parent_network);
+        let pegout =
+            PegoutValue::from_txout(txout, config.pegged_asset.as_ref(), config.parent_network);
 
         TxOutValue {
             scriptpubkey: script.clone(),
@@ -783,10 +801,12 @@ fn handle_request(
         }
         (&Method::GET, Some(&"block"), Some(hash), Some(&"txs"), start_index, None) => {
             let hash = BlockHash::from_str(hash)?;
-            
+
             // Add lightweight validation that block exists before fetching transactions,
             // to avoid expensive lookups in case of invalid block hash
-            query.chain().get_block_header(&hash)
+            query
+                .chain()
+                .get_block_header(&hash)
                 .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
 
             let start_index = start_index
@@ -1160,6 +1180,13 @@ fn handle_request(
         }
 
         #[cfg(feature = "liquid")]
+        (&Method::GET, Some(&"drivechain"), Some(&"pegs"), None, None, None) => {
+            let (start_height, count, include_l1) =
+                parse_drivechain_peg_query(&query_params, query.chain().best_height() as u32)?;
+            drivechain_peg_response(query.drivechain_peg_events(start_height, count, include_l1))
+        }
+
+        #[cfg(feature = "liquid")]
         (&Method::GET, Some(&"assets"), Some(&"registry"), None, None, None) => {
             let start_index: usize = query_params
                 .get("start_index")
@@ -1380,6 +1407,72 @@ fn getblocktemplate_rpc_error(err: &errors::Error) -> Option<(i64, String)> {
     }
 }
 
+#[cfg(feature = "liquid")]
+fn drivechain_peg_response<T: Serialize>(
+    result: errors::Result<T>,
+) -> Result<Response<Full<Bytes>>, HttpError> {
+    match result {
+        Ok(value) => json_response(value, TTL_SHORT),
+        Err(err) => match err.kind() {
+            errors::ErrorKind::RpcError(code, message, method)
+                if method == "getdrivechainpegevents" =>
+            {
+                json_response_no_store(
+                    json!({ "error": { "code": code, "message": message } }),
+                    StatusCode::BAD_GATEWAY,
+                )
+            }
+            errors::ErrorKind::Connection(message) => {
+                text_response_no_store(StatusCode::BAD_GATEWAY, message.clone())
+            }
+            _ => Err(HttpError::from(err)),
+        },
+    }
+}
+
+#[cfg(feature = "liquid")]
+fn parse_drivechain_peg_query(
+    query_params: &HashMap<String, String>,
+    tip_height: u32,
+) -> Result<(u32, u32, bool), HttpError> {
+    let start_height = match query_params.get("start_height") {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| HttpError::from("Invalid start_height".to_string()))?,
+        None => 0,
+    };
+    if start_height > tip_height {
+        return Err(HttpError::from(
+            "start_height is above the sidechain tip".to_string(),
+        ));
+    }
+
+    let count = match query_params.get("count") {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| HttpError::from("Invalid count".to_string()))?,
+        None => DRIVECHAIN_PEG_EVENT_LIMIT,
+    };
+    if !(1..=DRIVECHAIN_PEG_EVENT_LIMIT).contains(&count) {
+        return Err(HttpError::from(format!(
+            "count must be between 1 and {}",
+            DRIVECHAIN_PEG_EVENT_LIMIT
+        )));
+    }
+
+    let include_l1 = match query_params.get("include_l1").map(String::as_str) {
+        None | Some("false") | Some("0") => false,
+        Some("true") | Some("1") => true,
+        Some(_) => {
+            return Err(HttpError::from(
+                "include_l1 must be true, false, 1, or 0".to_string(),
+            ))
+        }
+    };
+
+    Ok((start_height, count, include_l1))
+}
+
 #[trace]
 fn blocks(query: &Query, start_height: Option<usize>) -> Result<Response<Full<Bytes>>, HttpError> {
     let mut values = Vec::new();
@@ -1546,6 +1639,35 @@ mod tests {
     use serde_json::Value;
     use std::collections::HashMap;
 
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn block_value_exposes_withdrawal_bundle_hash() {
+        use crate::chain::{BlockHash, TxMerkleNode};
+        use elements::hashes::Hash;
+
+        let bundle_hash = BlockHash::from_slice(&[0x5a; 32]).unwrap();
+        let value = super::BlockValue {
+            id: BlockHash::all_zeros(),
+            height: 42,
+            version: 0x2000_0000,
+            timestamp: 1_700_000_000,
+            tx_count: 0,
+            size: 0,
+            weight: 0,
+            merkle_root: TxMerkleNode::all_zeros(),
+            previousblockhash: None,
+            mediantime: 1_700_000_000,
+            withdrawal_bundle_hash: Some(bundle_hash),
+            ext: None,
+        };
+
+        let json = serde_json::to_value(value).unwrap();
+        assert_eq!(
+            json["withdrawal_bundle_hash"],
+            serde_json::Value::String(bundle_hash.to_string())
+        );
+    }
+
     #[test]
     fn test_parse_query_param() {
         let mut query_params = HashMap::new();
@@ -1606,6 +1728,58 @@ mod tests {
             .ok_or(HttpError::from("notexist absent or not a u64".to_string()));
 
         assert!(err.is_err());
+    }
+
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn parses_drivechain_peg_query() {
+        let mut params = HashMap::new();
+        assert_eq!(
+            super::parse_drivechain_peg_query(&params, 42).unwrap(),
+            (0, 10_000, false)
+        );
+
+        params.insert("start_height".to_string(), "10".to_string());
+        params.insert("count".to_string(), "25".to_string());
+        params.insert("include_l1".to_string(), "true".to_string());
+        assert_eq!(
+            super::parse_drivechain_peg_query(&params, 42).unwrap(),
+            (10, 25, true)
+        );
+
+        params.insert("count".to_string(), "10001".to_string());
+        assert!(super::parse_drivechain_peg_query(&params, 42).is_err());
+
+        params.insert("count".to_string(), "25".to_string());
+        params.insert("start_height".to_string(), "43".to_string());
+        assert!(super::parse_drivechain_peg_query(&params, 42).is_err());
+
+        params.insert("start_height".to_string(), "10".to_string());
+        params.insert("include_l1".to_string(), "sometimes".to_string());
+        assert!(super::parse_drivechain_peg_query(&params, 42).is_err());
+    }
+
+    #[cfg(feature = "liquid")]
+    #[tokio::test]
+    async fn drivechain_peg_response_maps_provider_errors() {
+        let unavailable: errors::Error = errors::ErrorKind::RpcError(
+            -1,
+            "enforcer unavailable".to_string(),
+            "getdrivechainpegevents".to_string(),
+        )
+        .into();
+        let response = super::drivechain_peg_response::<Value>(Err(unavailable)).unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+
+        let disconnected: errors::Error =
+            errors::ErrorKind::Connection("daemon unavailable".to_string()).into();
+        let response = super::drivechain_peg_response::<Value>(Err(disconnected)).unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+
+        let success = super::drivechain_peg_response(Ok(json!({ "schema_version": 1 }))).unwrap();
+        assert_eq!(success.status(), StatusCode::OK);
     }
 
     #[test]

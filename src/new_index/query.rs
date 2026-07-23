@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use crate::chain::{Network, OutPoint, Transaction, TxOut, Txid};
 use crate::config::Config;
 use crate::daemon::{Daemon, SubmitPackageResult};
+#[cfg(feature = "liquid")]
+use crate::daemon::DrivechainPegEvents;
 use crate::errors::*;
 use crate::new_index::{ChainQuery, Mempool, ScriptStats, SpendingInput, Utxo};
 use crate::util::{is_spendable, BlockId, Bytes, TransactionStatus};
@@ -148,6 +150,17 @@ impl Query {
         }
 
         Ok(body)
+    }
+
+    #[cfg(feature = "liquid")]
+    pub fn drivechain_peg_events(
+        &self,
+        start_height: u32,
+        count: u32,
+        include_l1: bool,
+    ) -> Result<DrivechainPegEvents> {
+        self.daemon
+            .getdrivechainpegevents(start_height, count, include_l1)
     }
 
     #[trace]

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "sidechain_id": 24,
+  "sidechain_tip": {
+    "hash": "a0ab4bf677f1f4d5b0feef7e1009e53e6f120f5e5ef7038a6437a5c4bc5f603c",
+    "height": 2673
+  },
+  "range": {
+    "start_height": 0,
+    "end_height": 2673
+  },
+  "events": [
+    {
+      "asset": "11b705a6eaa8ebcb8cbdb9ae162d415afd3ed787385e541dc3224b88c2089057",
+      "claim_script": "51",
+      "event_id": "sidechain:deposit:7d78b50fa26e51ca01d1a916820971e46dd6d11e8da7c06571b95d8c6dd4a382:0",
+      "kind": "deposit",
+      "mainchain_txid": "010a70b5ea6e545af594dad90ce1886387f5b4418577800644a65dd244e4edab",
+      "mainchain_vout": 0,
+      "sidechain": {
+        "block_hash": "1be28dd6ba2c46eee93fe3de9480ea80682eade32395e3aa074e217a69523802",
+        "height": 1246
+      },
+      "sidechain_txid": "7d78b50fa26e51ca01d1a916820971e46dd6d11e8da7c06571b95d8c6dd4a382",
+      "source": "sidechain",
+      "status": "sidechain_confirmed",
+      "value_sats": 100000,
+      "vin": 0
+    },
+    {
+      "event_id": "l1:deposit:530ccb2f22d0af5a49097486ac502f7f1e50fb688dd3dcae46ee7297ba0c5799:0",
+      "kind": "deposit",
+      "l1": {
+        "block_hash": "000002dc9bef2682f59c3607e9bf94588b52fc486191f0dbae3ca79d307523b8",
+        "height": 102,
+        "timestamp": 1784489554
+      },
+      "mainchain_txid": "530ccb2f22d0af5a49097486ac502f7f1e50fb688dd3dcae46ee7297ba0c5799",
+      "mainchain_vout": 0,
+      "sidechain_id": 24,
+      "source": "l1",
+      "status": "l1_confirmed",
+      "value_sats": 100000
+    },
+    {
+      "acknowledgement": "pending",
+      "event_id": "l1:withdrawal:2935fd5bea4447a80f7cc0c9cf2c43b284a80bd4d64706d6091cf8faa3b25f46:submitted:492",
+      "kind": "withdrawal_bundle",
+      "l1": {
+        "block_hash": "000001cdcd101e5e039eb092529b61379909d42e508c5f555f55ad3901dbac22",
+        "height": 492,
+        "timestamp": 1784610310
+      },
+      "m6id": "2935fd5bea4447a80f7cc0c9cf2c43b284a80bd4d64706d6091cf8faa3b25f46",
+      "sidechain_id": 24,
+      "source": "l1",
+      "status": "submitted"
+    },
+    {
+      "acknowledgement": "accepted",
+      "event_id": "l1:withdrawal:2935fd5bea4447a80f7cc0c9cf2c43b284a80bd4d64706d6091cf8faa3b25f46:succeeded:498",
+      "kind": "withdrawal_bundle",
+      "l1": {
+        "block_hash": "000003765f538937a0e2de5e6793f0ba542541c3af8811897dbd4eab7f6c8130",
+        "height": 498,
+        "timestamp": 1784610316
+      },
+      "m6id": "2935fd5bea4447a80f7cc0c9cf2c43b284a80bd4d64706d6091cf8faa3b25f46",
+      "mainchain_transaction": "020000000163969a2517f20daa99fd5c1ac4114c7e0a6897c64fbba8427f76912e2ef827630000000000ffffffff02971606000000000004b40118510100000000000000296a27555344444d360130e43dff9f79f42739d09ec4cc2cce7a06385d92e5f3dd2f3b17f0b0b5b0213400000000",
+      "sidechain_id": 24,
+      "source": "l1",
+      "status": "succeeded"
+    }
+  ]
+}

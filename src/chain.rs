@@ -213,3 +213,37 @@ impl From<BNetwork> for Network {
         }
     }
 }
+
+#[cfg(all(test, feature = "liquid"))]
+mod tests {
+    use super::*;
+    use elements::encode::{deserialize, serialize};
+    use elements::hashes::Hash;
+    use elements::BlockExtData;
+
+    #[test]
+    fn withdrawal_bundle_header_roundtrip() {
+        let bundle_hash = BlockHash::from_slice(&[0x5a; 32]).unwrap();
+        let header = BlockHeader {
+            version: 0x2000_0000,
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            withdrawal_bundle_hash: Some(bundle_hash),
+            time: 1_700_000_000,
+            height: 42,
+            ext: BlockExtData::Proof {
+                challenge: Script::new(),
+                solution: Script::new(),
+            },
+        };
+
+        let encoded = serialize(&header);
+        assert_eq!(&encoded[..4], &[0x00, 0x00, 0x00, 0x60]);
+
+        let decoded: BlockHeader = deserialize(&encoded).unwrap();
+        assert_eq!(decoded.version, 0x2000_0000);
+        assert_eq!(decoded.withdrawal_bundle_hash, Some(bundle_hash));
+        assert_eq!(decoded.block_hash(), header.block_hash());
+        assert_eq!(serialize(&decoded), encoded);
+    }
+}

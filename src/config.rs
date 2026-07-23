@@ -13,6 +13,8 @@ use crate::daemon::CookieGetter;
 use crate::errors::*;
 
 #[cfg(feature = "liquid")]
+use crate::chain::AssetId;
+#[cfg(feature = "liquid")]
 use bitcoin::Network as BNetwork;
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,6 +87,10 @@ pub struct Config {
     pub parent_network: BNetwork,
     #[cfg(feature = "liquid")]
     pub asset_db_path: Option<PathBuf>,
+    #[cfg(feature = "liquid")]
+    pub native_asset: AssetId,
+    #[cfg(feature = "liquid")]
+    pub pegged_asset: Option<AssetId>,
 
     #[cfg(feature = "electrum-discovery")]
     pub electrum_public_hosts: Option<crate::electrum::ServerHosts>,
@@ -317,6 +323,18 @@ impl Config {
                     .long("asset-db-path")
                     .help("Directory for liquid/elements asset db")
                     .takes_value(true),
+            )
+            .arg(
+                Arg::with_name("native_asset")
+                    .long("native-asset")
+                    .help("Override the network native asset id")
+                    .takes_value(true),
+            )
+            .arg(
+                Arg::with_name("pegged_asset")
+                    .long("pegged-asset")
+                    .help("Override the asset id used for peg-in and peg-out accounting")
+                    .takes_value(true),
             );
 
         #[cfg(feature = "electrum-discovery")]
@@ -355,6 +373,16 @@ impl Config {
 
         #[cfg(feature = "liquid")]
         let asset_db_path = m.value_of("asset_db_path").map(PathBuf::from);
+        #[cfg(feature = "liquid")]
+        let native_asset = m
+            .value_of("native_asset")
+            .map(|asset| asset.parse().expect("invalid native asset id"))
+            .unwrap_or(*network_type.native_asset());
+        #[cfg(feature = "liquid")]
+        let pegged_asset = m
+            .value_of("pegged_asset")
+            .map(|asset| asset.parse().expect("invalid pegged asset id"))
+            .or_else(|| network_type.pegged_asset().copied());
 
         let default_daemon_port = match network_type {
             #[cfg(not(feature = "liquid"))]
@@ -551,6 +579,10 @@ impl Config {
             parent_network,
             #[cfg(feature = "liquid")]
             asset_db_path,
+            #[cfg(feature = "liquid")]
+            native_asset,
+            #[cfg(feature = "liquid")]
+            pegged_asset,
 
             #[cfg(feature = "electrum-discovery")]
             electrum_public_hosts,
